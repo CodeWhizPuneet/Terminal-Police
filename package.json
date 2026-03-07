@@ -1,0 +1,59 @@
+{
+  "name": "terminal-error-sound",
+  "displayName": "Terminal Error Sound Alert",
+  "description": "Plays a custom sound alert when errors are detected in the VS Code integrated terminal.",
+  "version": "1.0.0",
+  "publisher": "Puneet Shankar",
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Terminal Error Sound Alert",
+      "properties": {
+        "terminalErrorSound.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable the terminal error sound alert."
+        },
+        "terminalErrorSound.soundFile": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to a custom sound file (mp3, wav). Leave empty to use the bundled default sound."
+        },
+        "terminalErrorSound.debounceDuration": {
+          "type": "number",
+          "default": 3000,
+          "description": "Minimum time (in milliseconds) between consecutive sound alerts to prevent spamming."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "terminalErrorSound.toggle",
+        "title": "Terminal Error Sound: Toggle Enable/Disable"
+      },
+      {
+        "command": "terminalErrorSound.testSound",
+        "title": "Terminal Error Sound: Test Sound"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.93.0",
+    "typescript": "^5.3.0"
+  }
+}
