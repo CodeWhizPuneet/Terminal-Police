@@ -1,9 +1,9 @@
 {
-  "name": "terminal-error-sound",
-  "displayName": "Terminal Error Sound Alert",
+  "name": "terminal-police",
+  "displayName": "Terminal Police",
   "description": "Plays a custom sound alert when errors are detected in the VS Code integrated terminal.",
   "version": "1.0.0",
-  "publisher": "Puneet Shankar",
+  "publisher": "codewhizpuneet",
   "engines": {
     "vscode": "^1.93.0"
   },
