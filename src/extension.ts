@@ -6,6 +6,152 @@ import { exec } from 'child_process';
 // ─── Debounce State ──────────────────────────────────────────────────────────
 let lastPlayedTime = 0;
 
+type TerminalAlertState = {
+    executionId: number;
+    alertedForExecution: boolean;
+};
+
+const terminalStates = new WeakMap<vscode.Terminal, TerminalAlertState>();
+
+function getOrCreateTerminalState(terminal: vscode.Terminal): TerminalAlertState {
+    const existing = terminalStates.get(terminal);
+    if (existing) {
+        return existing;
+    }
+
+    const created: TerminalAlertState = {
+        executionId: 0,
+        alertedForExecution: false,
+    };
+    terminalStates.set(terminal, created);
+    return created;
+}
+
+function beginTerminalExecution(terminal: vscode.Terminal): void {
+    const state = getOrCreateTerminalState(terminal);
+    state.executionId += 1;
+    state.alertedForExecution = false;
+}
+
+function markTerminalAlerted(terminal: vscode.Terminal): void {
+    const state = getOrCreateTerminalState(terminal);
+    state.alertedForExecution = true;
+}
+
+function hasAlertedForCurrentExecution(terminal: vscode.Terminal): boolean {
+    return getOrCreateTerminalState(terminal).alertedForExecution;
+}
+
+// ─── Output Buffer for Real-Time Monitoring ──────────────────────────────────
+const BUFFER_MAX_SIZE = 1000; // Keep last 1000 characters to catch patterns across chunks
+const terminalOutputBuffers = new WeakMap<vscode.Terminal, string>();
+
+function getTerminalBuffer(terminal: vscode.Terminal): string {
+    return terminalOutputBuffers.get(terminal) ?? '';
+}
+
+function setTerminalBuffer(terminal: vscode.Terminal, value: string): void {
+    terminalOutputBuffers.set(terminal, value);
+}
+
+function appendTerminalBuffer(terminal: vscode.Terminal, chunk: string): string {
+    let next = `${getTerminalBuffer(terminal)}${chunk}`;
+    if (next.length > BUFFER_MAX_SIZE) {
+        next = next.slice(-BUFFER_MAX_SIZE);
+    }
+    setTerminalBuffer(terminal, next);
+    return next;
+}
+
+/**
+ * Remove ANSI escape codes from text (color codes, formatting, etc.)
+ * Handles: CSI codes, OSC codes, and other common ANSI sequences
+ */
+function stripAnsiCodes(text: string): string {
+    return text
+        .replace(/\x1b\[[0-9;]*m/g, '') // CSI SGR codes (colors, bold, etc.)
+        .replace(/\x1b\].*?\x07/g, '') // OSC codes
+        .replace(/\x1b\[.*?[@-~]/g, ''); // Other CSI sequences
+}
+
+/**
+ * Check if text contains error patterns while avoiding false positives.
+ */
+function containsError(text: string): boolean {
+    const config = vscode.workspace.getConfiguration('terminalErrorSound');
+    const errorPatterns = config.get<string[]>('errorPatterns', [
+        'Error', 'error', 'Exception', 'exception', 'Traceback', 'traceback',
+        'Failed', 'failed', 'FAILED', 'ModuleNotFoundError', 'ImportError',
+        'SyntaxError', 'ValueError', 'TypeError', 'AttributeError',
+        'FileNotFoundError', 'KeyError', 'IndexError', 'ZeroDivisionError',
+        'RuntimeError', 'OSError', 'IOError'
+    ]);
+    
+    const excludePatterns = config.get<string[]>('excludePatterns', [
+        'no error', 'error handling', 'error message', 'error code', 'error recovery'
+    ]);
+
+    const lowerText = text.toLowerCase();
+
+    // Check if text matches any exclude pattern first
+    for (const exclude of excludePatterns) {
+        if (lowerText.includes(exclude.toLowerCase())) {
+            return false; // Excluded pattern found, don't treat as error
+        }
+    }
+
+    // Check if text matches any error pattern
+    for (const pattern of errorPatterns) {
+        if (text.includes(pattern)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Detect if text is from a benign command that shouldn't trigger alerts.
+ * Prevents false positives from grep, ls, find, cat, etc.
+ * 
+ * Examples:
+ * - `grep "error" file.txt` => benign (searching for word "error")
+ * - `ls error_logs/` => benign (directory name contains "error")
+ * - `find . -name "*error*"` => benign (pattern matching)
+ * - `echo "No error found"` => benign (informational output)
+ */
+function isBenignCommand(text: string): boolean {
+    const lowerText = text.toLowerCase();
+    
+    // Benign patterns that shouldn't trigger alerts
+    const benignPatterns = [
+        // Search/list commands with arguments
+        /^(grep|grep\s+|find\s+|locate|ls\s|ls\s+|cat\s+|head\s+|tail\s+|find\s+)/,
+        // Output from ls containing directories with "error" in name
+        /^\s*(error_|_error|\.error)/,
+        // Git commands showing "error" in filenames
+        /^(git\s+|diff\s+)/,
+        // File/path references (no actual errors)
+        /\.(error|log|txt|md)(\s|$|:)/,
+        // "No error" or "error status" informational outputs
+        /no\s+error/i,
+        /error\s+status/i,
+        /error\s+(code|message|type):/i,
+        // Comments from code
+        /^\s*(#|\/\/|\/\*|<!--).*error/i,
+        // Configuration or help output
+        /^(usage|help|command|option|flag).*error/i,
+    ];
+    
+    for (const pattern of benignPatterns) {
+        if (pattern.test(lowerText)) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
 /**
  * Play a sound file cross-platform using native OS commands.
  */
@@ -110,6 +256,14 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     context.subscriptions.push(testSoundCommand);
 
+    // Track command boundaries per terminal to avoid duplicate alerts while
+    // allowing consecutive failing commands to alert independently.
+    const shellStartListener = vscode.window.onDidStartTerminalShellExecution((event) => {
+        beginTerminalExecution(event.terminal);
+        setTerminalBuffer(event.terminal, '');
+    });
+    context.subscriptions.push(shellStartListener);
+
     // ─── Listen for failed terminal commands (stable API) ────────────────────
     // Fires when a terminal shell command finishes execution.
     // If exit code is non-zero, the command failed → play the error sound.
@@ -121,14 +275,75 @@ export function activate(context: vscode.ExtensionContext): void {
             return;
         }
 
+        // Reset rolling output buffer when a command finishes.
+        setTerminalBuffer(event.terminal, '');
+
         if (event.exitCode !== undefined && event.exitCode !== 0) {
+            // If live-output already alerted for this command execution, skip duplicate.
+            if (hasAlertedForCurrentExecution(event.terminal)) {
+                return;
+            }
+
             if (shouldPlay()) {
                 const soundPath = getSoundFilePath(context.extensionPath);
                 playSound(soundPath);
+                markTerminalAlerted(event.terminal);
             }
         }
     });
     context.subscriptions.push(shellListener);
+
+    // ─── Listen for real-time terminal output (venv support) ───────────────────
+    // This uses a proposed API when available. If unavailable, extension stays active
+    // and falls back to stable exit-code detection above.
+    const terminalWindow = vscode.window as any;
+    const onDidWriteTerminalData = terminalWindow.onDidWriteTerminalData;
+
+    if (typeof onDidWriteTerminalData === 'function') {
+        try {
+            const outputListener = onDidWriteTerminalData((event: any) => {
+                const config = vscode.workspace.getConfiguration('terminalErrorSound');
+                const enabled = config.get<boolean>('enabled', true);
+                const detectLiveOutput = config.get<boolean>('detectLiveOutput', true);
+
+                if (!enabled || !detectLiveOutput) {
+                    return;
+                }
+
+                // Strip ANSI codes to get clean text
+                const cleanText = stripAnsiCodes(event.data);
+
+                // Add to buffer to catch patterns across chunks
+                const outputBuffer = appendTerminalBuffer(event.terminal, cleanText);
+
+                // Skip benign commands (grep, ls, find, etc.) to reduce false positives
+                if (isBenignCommand(outputBuffer)) {
+                    return;
+                }
+
+                // Check if error pattern is found in recent output
+                if (containsError(outputBuffer)) {
+                    // Only one alert per command execution in this terminal.
+                    if (hasAlertedForCurrentExecution(event.terminal)) {
+                        return;
+                    }
+
+                    if (shouldPlay()) {
+                        const soundPath = getSoundFilePath(context.extensionPath);
+                        playSound(soundPath);
+                        markTerminalAlerted(event.terminal);
+
+                        // Clear buffer after detection to avoid repeated alerts for same error
+                        setTerminalBuffer(event.terminal, '');
+                    }
+                }
+            });
+            context.subscriptions.push(outputListener);
+        } catch (error) {
+            // Proposed API is present but not enabled for this extension host.
+            console.warn('Terminal Error Sound: Live output listener unavailable; using exit-code detection only.', error);
+        }
+    }
 }
 
 // ─── Extension Deactivation ─────────────────────────────────────────────────

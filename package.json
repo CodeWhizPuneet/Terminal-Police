@@ -34,6 +34,9 @@
   "engines": {
     "vscode": "^1.93.0"
   },
+  "enabledApiProposals": [
+    "terminalDataWriteEvent"
+  ],
   "categories": [
     "Other"
   ],
@@ -59,6 +62,50 @@
           "type": "number",
           "default": 3000,
           "description": "Minimum time (in milliseconds) between consecutive sound alerts to prevent spamming."
+        },
+        "terminalErrorSound.detectLiveOutput": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable real-time terminal output monitoring for venv and streaming errors (Python tracebacks, etc.). Works alongside exit code detection."
+        },
+        "terminalErrorSound.errorPatterns": {
+          "type": "array",
+          "default": [
+            "Error",
+            "error",
+            "Exception",
+            "exception",
+            "Traceback",
+            "traceback",
+            "Failed",
+            "failed",
+            "FAILED",
+            "ModuleNotFoundError",
+            "ImportError",
+            "SyntaxError",
+            "ValueError",
+            "TypeError",
+            "AttributeError",
+            "FileNotFoundError",
+            "KeyError",
+            "IndexError",
+            "ZeroDivisionError",
+            "RuntimeError",
+            "OSError",
+            "IOError"
+          ],
+          "description": "Array of patterns to detect error messages in terminal output. Add or customize patterns for error detection."
+        },
+        "terminalErrorSound.excludePatterns": {
+          "type": "array",
+          "default": [
+            "no error",
+            "error handling",
+            "error message",
+            "error code",
+            "error recovery"
+          ],
+          "description": "Patterns to exclude from error detection (prevents false positives). Case-insensitive."
         }
       }
     },
